@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from aiogram import Bot
 from bot import telegram_bot, dp
 from core.database import init_db
 import bot.handlers  # register all handlers
@@ -27,10 +26,14 @@ async def load_allowed_topics_cache():
 
 async def main():
     init_db()
+    await load_allowed_topics_cache()
+
     logging.info("🚀 Bot started and database initialized.")
+    logging.info("📦 Using Redis for FSM storage")
 
     me = await telegram_bot.get_me()
     logging.info(f"Bot authorized: @{me.username}")
+    logging.info(f"Redis connection: {dp.storage}")
 
     await dp.start_polling(telegram_bot)
 

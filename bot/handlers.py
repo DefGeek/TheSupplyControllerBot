@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Set, Optional
+from typing import Dict, Tuple
 from datetime import datetime
 from aiogram import types
 from aiogram.filters import Command
@@ -13,8 +13,6 @@ from core.sheets import create_spreadsheet
 
 # Кэш разрешённых тем: {(chat_id, thread_id): {"admin_id": int, "registered_at": datetime}}
 _allowed_topics_cache: Dict[tuple[int, int], dict] = {}
-# Кэш для состояний регистрации бота: {chat_id: {"thread_id": thread_id, "admin_id": user_id}}
-_pending_bot_registrations: Dict[int, dict] = {}
 
 
 async def is_user_admin(chat_id: int, user_id: int, bot) -> bool:
@@ -91,8 +89,130 @@ class GroupStates(StatesGroup):
 
 
 class BotRegistrationStates(StatesGroup):
-    waiting_for_object_name = State()
     waiting_for_object_code = State()
+    waiting_for_object_name = State()
+
+
+# ================== ОБРАБОТЧИКИ РЕГИСТРАЦИИ БОТА ==================
+
+@dp.message(BotRegistrationStates.waiting_for_object_code)
+async def process_bot_object_code(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод кода объекта (ПЕРВЫЙ ШАГ)"""
+    object_code = message.text.strip()
+
+    # Проверяем, не команда ли это (начинается с /)
+    if object_code.startswith('/'):
+        await message.answer("❌ Пожалуйста, введите код объекта БЕЗ слеша /")
+        return
+
+    if len(object_code) < 2:
+        await message.answer("❌ Код объекта слишком короткий. Введите ещё раз:")
+        return
+
+    # Сохраняем код объекта в FSM (теперь в Redis)
+    await state.update_data(object_code=object_code)
+
+    await message.answer(
+        f"✅ **Код объекта:** {object_code}\n\n"
+        "📝 **Теперь введите наименование объекта (без слеша /):**\n"
+        "Например: 'Склад №1', 'Офисное здание', 'Торговый центр'"
+    )
+
+    # Переходим ко второму шагу
+    await state.set_state(BotRegistrationStates.waiting_for_object_name)
+
+
+@dp.message(BotRegistrationStates.waiting_for_object_name)
+async def process_bot_object_name(message: types.Message, state: FSMContext):
+    """Обрабатывает ввод наименования объекта (ВТОРОЙ ШАГ)"""
+    object_name = message.text.strip()
+
+    # Проверяем, не команда ли это
+    if object_name.startswith('/'):
+        await message.answer("❌ Пожалуйста, введите наименование объекта БЕЗ слеша /")
+        return
+
+    if len(object_name) < 2:
+        await message.answer("❌ Наименование объекта слишком короткое. Введите ещё раз:")
+        return
+
+    # Получаем все данные из FSM (теперь из Redis)
+    data = await state.get_data()
+    chat_id = data.get("chat_id")
+    thread_id = data.get("thread_id")
+    admin_id = data.get("admin_id")
+    admin_name = data.get("admin_name")
+    object_code = data.get("object_code")
+
+    if not all([chat_id, thread_id, admin_id, object_code]):
+        await message.answer("❌ Ошибка: данные регистрации не найдены. Начните заново с /register_bot")
+        await state.clear()
+        return
+
+    try:
+        # Создаём Google Sheet
+        sheet_title = f"{object_code} - {object_name}"
+        sheet_id = create_spreadsheet(sheet_title)
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+
+        # Регистрируем тему в базе данных
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO allowed_topics 
+               (chat_id, thread_id, registered_by, object_name, object_code, sheet_id, sheet_url) 
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (chat_id, thread_id, admin_id, object_name, object_code, sheet_id, sheet_url)
+        )
+        conn.commit()
+        conn.close()
+
+        # Добавляем в кэш
+        cache_key = (chat_id, thread_id)
+        _allowed_topics_cache[cache_key] = {
+            "admin_id": admin_id,
+            "registered_at": datetime.now(),
+            "object_name": object_name,
+            "object_code": object_code,
+            "sheet_id": sheet_id
+        }
+
+        # Отправляем сообщение об успешной регистрации
+        await message.answer(
+            f"✅ **Бот успешно активирован и настроен!**\n\n"
+            f"**📊 Создан Google Sheet:**\n"
+            f"• Код: {object_code}\n"
+            f"• Наименование: {object_name}\n\n"
+            f"**🔗 Ссылка на таблицу:**\n"
+            f"{sheet_url}\n\n"
+            f"**👤 Активировал:** {admin_name}\n"
+            f"**📌 ID темы:** {thread_id}\n\n"
+            f"Теперь бот готов к работе в этой теме!"
+        )
+
+        # Также отправляем кнопку для быстрого доступа
+        keyboard = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(
+                        text="📊 Открыть Google Sheet",
+                        url=sheet_url
+                    )
+                ]
+            ]
+        )
+
+        await message.answer("Нажмите для открытия таблицы:", reply_markup=keyboard)
+
+    except Exception as e:
+        logging.error(f"Error during bot registration: {e}")
+        await message.answer(
+            f"❌ **Ошибка при настройке бота:**\n\n"
+            f"Ошибка: {str(e)}\n\n"
+            f"Попробуйте снова командой `/register_bot`"
+        )
+    finally:
+        await state.clear()
 
 
 # --- Регистрация бота в теме ---
@@ -114,7 +234,6 @@ async def register_bot_command(message: types.Message, state: FSMContext):
         return
 
     chat_id = message.chat.id
-    cache_key = (chat_id, thread_id)
 
     # Проверяем, не зарегистрирована ли уже тема
     conn = get_connection()
@@ -130,139 +249,32 @@ async def register_bot_command(message: types.Message, state: FSMContext):
         await message.answer("✅ Бот уже активирован в этой теме.")
         return
 
-    # Начинаем процесс регистрации бота с созданием Google Sheet
+    # НАЧИНАЕМ ПРОЦЕСС: сначала код!
     await message.answer(
         "🤖 **Начинаем настройку бота для этой темы**\n\n"
         "Для завершения регистрации нужно создать Google Sheet для этой темы.\n\n"
-        "📝 **Введите наименование объекта:**\n"
-        "Например: 'Склад №1', 'Офисное здание', 'Торговый центр'"
-    )
-    
-    # Сохраняем информацию о регистрации во временный кэш
-    _pending_bot_registrations[chat_id] = {
-        "thread_id": thread_id,
-        "admin_id": message.from_user.id,
-        "admin_name": message.from_user.full_name
-    }
-    
-    # Устанавливаем состояние для ввода наименования объекта
-    await state.set_state(BotRegistrationStates.waiting_for_object_name)
-
-
-# --- Обработчик ввода наименования объекта при регистрации бота ---
-@dp.message(BotRegistrationStates.waiting_for_object_name)
-async def process_bot_object_name(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод наименования объекта при регистрации бота"""
-    if not _pending_bot_registrations.get(message.chat.id):
-        await state.clear()
-        return
-    
-    object_name = message.text.strip()
-    if len(object_name) < 2:
-        await message.answer("❌ Наименование объекта слишком короткое. Введите ещё раз:")
-        return
-    
-    # Сохраняем наименование объекта
-    _pending_bot_registrations[message.chat.id]["object_name"] = object_name
-    
-    await message.answer(
-        f"✅ **Наименование объекта:** {object_name}\n\n"
-        "🔢 **Теперь введите код объекта:**\n"
+        "🔢 **Введите код объекта (без слеша /):**\n"
         "Например: 'SKL-001', 'OF-2024', 'TC-MOS'"
     )
-    
+
+    # Сохраняем данные в FSM (теперь в Redis)
+    await state.update_data(
+        chat_id=chat_id,
+        thread_id=thread_id,
+        admin_id=message.from_user.id,
+        admin_name=message.from_user.full_name
+    )
+
+    # Начинаем с ожидания кода объекта
     await state.set_state(BotRegistrationStates.waiting_for_object_code)
 
 
-# --- Обработчик ввода кода объекта при регистрации бота ---
-@dp.message(BotRegistrationStates.waiting_for_object_code)
-async def process_bot_object_code(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод кода объекта и завершает регистрацию бота"""
-    if not _pending_bot_registrations.get(message.chat.id):
-        await state.clear()
-        return
-    
-    object_code = message.text.strip()
-    if len(object_code) < 2:
-        await message.answer("❌ Код объекта слишком короткий. Введите ещё раз:")
-        return
-    
-    chat_id = message.chat.id
-    registration_data = _pending_bot_registrations[chat_id]
-    thread_id = registration_data["thread_id"]
-    object_name = registration_data["object_name"]
-    admin_id = registration_data["admin_id"]
-    
-    try:
-        # Создаём Google Sheet
-        sheet_title = f"{object_code} - {object_name}"
-        sheet_id = create_spreadsheet(sheet_title)
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-        
-        # Регистрируем тему в базе данных с информацией о таблице
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """INSERT INTO allowed_topics 
-               (chat_id, thread_id, registered_by, object_name, object_code, sheet_id, sheet_url) 
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (chat_id, thread_id, admin_id, object_name, object_code, sheet_id, sheet_url)
-        )
-        conn.commit()
-        conn.close()
-        
-        # Добавляем в кэш
-        cache_key = (chat_id, thread_id)
-        _allowed_topics_cache[cache_key] = {
-            "admin_id": admin_id,
-            "registered_at": datetime.now(),
-            "object_name": object_name,
-            "object_code": object_code,
-            "sheet_id": sheet_id
-        }
-        
-        # Удаляем из временного кэша
-        del _pending_bot_registrations[chat_id]
-        
-        # Отправляем сообщение об успешной регистрации
-        await message.answer(
-            f"✅ **Бот успешно активирован и настроен!**\n\n"
-            f"**📊 Создан Google Sheet:**\n"
-            f"• Название: {sheet_title}\n"
-            f"• Код объекта: {object_code}\n"
-            f"• Наименование: {object_name}\n\n"
-            f"**🔗 Ссылка на таблицу:**\n"
-            f"{sheet_url}\n\n"
-            f"**👤 Активировал:** {registration_data['admin_name']}\n"
-            f"**📌 ID темы:** {thread_id}\n\n"
-            f"Теперь бот готов к работе в этой теме!"
-        )
-        
-        # Также отправляем кнопку для быстрого доступа
-        keyboard = types.InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    types.InlineKeyboardButton(
-                        text="📊 Открыть Google Sheet",
-                        url=sheet_url
-                    )
-                ]
-            ]
-        )
-        
-        await message.answer("Нажмите для открытия таблицы:", reply_markup=keyboard)
-        
-    except Exception as e:
-        logging.error(f"Error during bot registration: {e}")
-        await message.answer(
-            f"❌ **Ошибка при настройке бота:**\n\n"
-            f"Ошибка: {str(e)}\n\n"
-            f"Попробуйте снова командой `/register_bot`"
-        )
-        if chat_id in _pending_bot_registrations:
-            del _pending_bot_registrations[chat_id]
-    
+# --- Команда отмены регистрации ---
+@dp.message(Command("cancel"))
+async def cancel_registration(message: types.Message, state: FSMContext):
+    """Отменяет текущий процесс регистрации"""
     await state.clear()
+    await message.answer("❌ Процесс регистрации отменён.")
 
 
 # --- Удаление регистрации темы (для администраторов) ---
@@ -386,18 +398,18 @@ async def create_sheet_command(message: types.Message, state: FSMContext):
     """Создаёт дополнительный Google Sheet в уже активированной теме"""
     if not await is_allowed_context(message):
         return
-    
+
     # Проверяем, зарегистрирован ли пользователь
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (message.from_user.id,))
     user = cursor.fetchone()
     conn.close()
-    
+
     if not user:
         await message.answer("❌ Сначала зарегистрируйтесь с помощью команды /start")
         return
-    
+
     await message.answer(
         "📋 **Создание дополнительного Google Sheet**\n\n"
         "Введите наименование объекта:"
@@ -434,14 +446,14 @@ async def handle_object_code(message: types.Message, state: FSMContext):
         cursor.execute("SELECT fio FROM users WHERE user_id = ?", (message.from_user.id,))
         user = cursor.fetchone()
         conn.close()
-        
+
         user_fio = user[0] if user else "Неизвестный"
-        
+
         # Создаём название таблицы
         sheet_title = f"{object_code} - {object_name} ({user_fio})"
         sheet_id = create_spreadsheet(sheet_title)
         sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-        
+
         await message.reply(
             f"✅ **Дополнительный Google Sheet создан!**\n\n"
             f"**📊 Информация:**\n"
@@ -451,7 +463,7 @@ async def handle_object_code(message: types.Message, state: FSMContext):
             f"• Создатель: {user_fio}\n\n"
             f"**🔗 Ссылка:**\n{sheet_url}"
         )
-        
+
         # Кнопка для открытия таблицы
         keyboard = types.InlineKeyboardMarkup(
             inline_keyboard=[
@@ -463,9 +475,9 @@ async def handle_object_code(message: types.Message, state: FSMContext):
                 ]
             ]
         )
-        
+
         await message.answer("Нажмите для открытия:", reply_markup=keyboard)
-        
+
     except Exception as e:
         logging.error(f"Error creating additional spreadsheet: {e}")
         await message.reply(
@@ -496,7 +508,7 @@ async def on_bot_added_to_group(update: types.ChatMemberUpdated):
                 "**Для настройки:**\n"
                 "1. Перейдите в тему, где должен работать бот\n"
                 "2. Введите команду: `/register_bot`\n"
-                "3. Следуйте инструкциям для создания Google Sheet\n\n"
+                "3. Следуйте инструкции для создания Google Sheet\n\n"
                 "**Бот будет работать только в темах, где выполнена команда /register_bot!**\n\n"
                 "*Команда доступна только администраторам*"
             )
@@ -519,10 +531,10 @@ async def topic_info_command(message: types.Message):
     """Показывает информацию о текущей теме и связанном Google Sheet"""
     if not await is_allowed_context(message):
         return
-    
+
     thread_id = message.message_thread_id
     chat_id = message.chat.id
-    
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -531,7 +543,7 @@ async def topic_info_command(message: types.Message):
     )
     result = cursor.fetchone()
     conn.close()
-    
+
     if result:
         object_name, object_code, sheet_url, admin_id = result
         info_text = (
@@ -543,8 +555,8 @@ async def topic_info_command(message: types.Message):
             f"• Ссылка: {sheet_url}\n\n"
             f"**👤 Активатор:** ID {admin_id}"
         )
-        
-        # Добавляем кнопку для открытия таблицы
+
+        # Добавляем кнопку для открытия таблицу
         keyboard = types.InlineKeyboardMarkup(
             inline_keyboard=[
                 [
@@ -555,7 +567,7 @@ async def topic_info_command(message: types.Message):
                 ]
             ]
         )
-        
+
         await message.answer(info_text, reply_markup=keyboard)
     else:
         await message.answer("ℹ️ Информация о теме не найдена.")
@@ -573,68 +585,14 @@ async def help_command(message: types.Message):
         "• `/start` — регистрация в системе\n"
         "• `/create_sheet` — создать дополнительный Google Sheet\n"
         "• `/topic_info` — информация о текущей теме\n"
-        "• `/help` — эта справка\n\n"
+        "• `/help` — эта справка\n"
+        "• `/cancel` — отменить текущий процесс регистрации\n\n"
         "**Управление ботом в теме:**\n"
         "• `/register_bot` — активировать бота в этой теме (админы)\n"
         "• `/unregister_bot` — деактивировать бота в этой теме (админы)\n\n"
-        "**Для администраторов:**\n"
-        "1. Добавьте бота в форум-группу\n"
-        "2. В нужной теме введите `/register_bot`\n"
-        "3. Введите наименование и код объекта\n"
-        "4. Автоматически создастся Google Sheet"
+        "**Процесс активации бота:**\n"
+        "1. Введите `/register_bot` (только админы)\n"
+        "2. Введите код объекта (без /)\n"
+        "3. Введите название объекта (без /)\n"
+        "4. Бот создаст таблицу и активируется"
     )
-
-
-# --- Фильтр сообщений ---
-@dp.message()
-async def filter_group_messages(message: types.Message):
-    """Фильтрует сообщения в группах"""
-    if message.chat.type in ("group", "supergroup"):
-        # Игнорируем сообщения в неразрешённых темах
-        await is_allowed_context(message)
-
-
-# --- Команда для отладки ---
-@dp.message(Command("debug"))
-async def debug_command(message: types.Message):
-    """Отладочная информация о теме"""
-    thread_id = message.message_thread_id
-    chat_id = message.chat.id
-
-    cache_key = (chat_id, thread_id)
-    is_allowed = cache_key in _allowed_topics_cache
-
-    # Проверяем в базе данных
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT object_name, object_code, sheet_url, registered_by FROM allowed_topics WHERE chat_id = ? AND thread_id = ?",
-        (chat_id, thread_id)
-    )
-    result = cursor.fetchone()
-    conn.close()
-
-    debug_info = (
-        f"🔧 **Отладочная информация:**\n\n"
-        f"**Чат:**\n"
-        f"• ID: `{chat_id}`\n"
-        f"• Название: `{message.chat.title}`\n"
-        f"• Тип: `{message.chat.type}`\n\n"
-        f"**Тема:**\n"
-        f"• Thread ID: `{thread_id}`\n"
-        f"• Разрешена: `{'да' if is_allowed else 'нет'}`\n"
-        f"• В базе: `{'да' if result else 'нет'}`\n"
-        f"• Pending регистрация: `{'да' if chat_id in _pending_bot_registrations else 'нет'}`"
-    )
-
-    if result:
-        object_name, object_code, sheet_url, admin_id = result
-        debug_info += (
-            f"\n\n**📊 Объект:**\n"
-            f"• Наименование: `{object_name}`\n"
-            f"• Код: `{object_code}`\n"
-            f"• Ссылка на таблицу: `{sheet_url[:50]}...`\n"
-            f"• Активатор: `{admin_id}`"
-        )
-
-    await message.reply(debug_info, parse_mode="Markdown")
