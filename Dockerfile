@@ -1,5 +1,20 @@
-FROM redis:7-alpine
+FROM python:3.10-slim
 
-EXPOSE 6379
+WORKDIR /app
 
-CMD ["redis-server", "--appendonly", "yes", "--save", "900 1", "--save", "300 10", "--save", "60 10000"]
+# Установка минимальных зависимостей
+RUN apt-get update && apt-get install -y \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копируем requirements
+COPY requirements.txt .
+
+# Устанавливаем зависимости
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Копируем все файлы проекта
+COPY . .
+
+# Запускаем бота
+CMD ["python", "main.py"]
