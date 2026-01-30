@@ -23,7 +23,7 @@ ADMIN_IDS = [
 # Добавьте себя как администратора по умолчанию
 # (Замените 123456789 на ваш реальный Telegram ID)
 if not ADMIN_IDS:
-    ADMIN_IDS = [6718656703]  # Ваш Telegram ID
+    ADMIN_IDS = [1340889852]  # Ваш Telegram ID
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN is missing in environment variables (.env file)")

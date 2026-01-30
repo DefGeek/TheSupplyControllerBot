@@ -14,10 +14,12 @@ SCOPES = [
 ]
 
 # Файл с OAuth 2.0 Desktop App credentials
-OAUTH_CREDENTIALS_FILE = "/app/bot/cred.json"
+#OAUTH_CREDENTIALS_FILE = "/app/bot/cred.json"
+OAUTH_CREDENTIALS_FILE = "/home/user/Desktop/TheSupplyControllerBot//bot/cred.json"
 
 # Файл с токеном (создаётся автоматически)
-TOKEN_FILE = "/app/token.pickle"
+#TOKEN_FILE = "/app/token.pickle"
+TOKEN_FILE = "/home/user/Desktop/TheSupplyControllerBot/tocken.pickle"
 
 
 # ================== ПРОВЕРКА ФАЙЛА ==================

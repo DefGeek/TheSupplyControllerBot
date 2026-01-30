@@ -15,27 +15,27 @@ services:
       timeout: 5s
       retries: 3
 
-  bot:
-    build: .
-    container_name: supply_bot
-    depends_on:
-      redis:
-        condition: service_healthy
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_DB=0
-      # Используйте существующие переменные из .env или установите здесь
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_IDS=${ADMIN_IDS}
-    volumes:
-      - ./:/app  # Монтируем текущую директорию
-      - ./users.db:/app/users.db  # База данных
-      - ./token.pickle:/app/token.pickle  # Токен Google
-      - ./credentials.json:/app/credentials.json  # Креды Google
-    restart: unless-stopped
-    working_dir: /app
-    command: python main.py
+#  bot:
+#    build: .
+#    container_name: supply_bot
+#    depends_on:
+#      redis:
+#        condition: service_healthy
+#    environment:
+#      - REDIS_HOST=redis
+#      - REDIS_PORT=6379
+#      - REDIS_DB=0
+#      # Используйте существующие переменные из .env или установите здесь
+#      - BOT_TOKEN=${BOT_TOKEN}
+#      - ADMIN_IDS=${ADMIN_IDS}
+#    volumes:
+#      - ./:/app  # Монтируем текущую директорию
+#      - ./users.db:/app/users.db  # База данных
+#      - ./token.pickle:/app/token.pickle:rw  # Токен Google
+#      - ./credentials.json:/app/credentials.json  # Креды Google
+#    restart: unless-stopped
+#    working_dir: /app
+#    command: python main.py
 
 volumes:
   redis_data:

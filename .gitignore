@@ -29,5 +29,6 @@ logs/
 .idea/
 
 token.pickle
+tocken.pickle
 users.db
 credentials.json

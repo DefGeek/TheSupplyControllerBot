@@ -1330,15 +1330,6 @@ async def register_bot_command(message: types.Message, state: FSMContext):
         await message.answer("❌ Эта команда работает только внутри тем.")
         return
 
-    # Проверяем права пользователя в группе (должен быть админом группы)
-    if not await is_user_admin(message.chat.id, message.from_user.id, message.bot):
-        await message.answer(
-            "❌ Для активации бота в теме вы должны быть администратором этой группы.\n\n"
-            "Права администратора бота и администратора группы - это разные вещи.\n"
-            "Вы администратор бота, но не администратор этой группы."
-        )
-        return
-
     chat_id = message.chat.id
 
     # Проверяем, не зарегистрирована ли уже тема
@@ -1498,11 +1489,6 @@ async def unregister_bot_command(message: types.Message):
     thread_id = message.message_thread_id
     if not thread_id or thread_id == 0:
         await message.answer("❌ Эта команда работает только внутри тем.")
-        return
-
-    # Проверяем права пользователя в группе
-    if not await is_user_admin(message.chat.id, message.from_user.id, message.bot):
-        await message.answer("❌ Только администраторы группы могут деактивировать бота в теме.")
         return
 
     chat_id = message.chat.id
