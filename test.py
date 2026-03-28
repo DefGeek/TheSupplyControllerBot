@@ -1,6 +1,6 @@
 import requests
 
-BOT_TOKEN = "8159052980:AAEzFqRcE7EdgOfvic4bdAV_2i0tuVFLLPc"
+BOT_TOKEN = ""
 url = f"https://api.telegram.org/bot{BOT_TOKEN}/getForumTopic"
 params = {
     "chat_id": -1001234567890, # ID группы
